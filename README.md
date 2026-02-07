@@ -75,3 +75,36 @@ Backend: http://localhost:5000
 DB: localhost:5432
 
 
+UI → Backend → Database Flow Verification
+
+Open the UI in browser:
+
+http://localhost:3000
+
+
+##Login as Admin (or use available admin access).
+
+Navigate to Courses section.
+
+Click Add Course and create a course
+Example:
+
+##Course Name: Devops
+
+
+#Submit the form.
+
+##Verify Data Stored in Database
+
+##After creating the course from UI, verify data in PostgreSQL:
+
+psql "postgresql://lms_user:lms_pass@localhost:5432/lms_db" \
+-c 'SELECT * FROM "Course";'
+
+
+##This confirms:
+
+UI → Backend API → PostgreSQL DB
+
+
+data flow is working correctly.
