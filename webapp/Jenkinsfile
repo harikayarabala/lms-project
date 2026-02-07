@@ -1,0 +1,106 @@
+pipeline {
+    agent {
+    node {
+         label 'slave'   // slave details to execute job
+         }
+     }
+    environment {
+        dockerhub = credentials('dockerhub')
+        deployBranch= 'Jenkins-Docker'
+        SONARQUBE_URL = 'http://54.67.11.240:9000'  // Your SonarQube URL
+        SONARQUBE_TOKEN = credentials('sonar')  // Replace with your Jenkins credential ID
+    }
+    stages {
+        stage('Notification') {
+          steps {
+              slackSend channel: 'deployment-team', color: '#439FE0', message: '*LMS Frontend* deployment job started', teamDomain: 'project-ste2943', tokenCredentialId: 'slack'
+                }
+            }
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool name: 'sonarqube', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
+                    withSonarQubeEnv('sonarqube') {  // Name of SonarQube instance in Jenkins configuration
+                        sh """
+                        ${scannerHome}/bin/sonar-scanner \
+                        -Dsonar.projectKey=lmsfe \
+                        -Dsonar.sources=. \
+                        -Dsonar.host.url=${SONARQUBE_URL} \
+                        -Dsonar.login=${SONARQUBE_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+        stage('Approval') {
+            steps {
+                script {
+                    def Delay = input id: 'Deploy',
+                        message: sh(script: '''echo "You are DEPLOYING -->$deployBranch<-- IN PRODUCTION"''', returnStdout: true).trim(),
+                        submitter: 'uaserID1, userID2',
+                        parameters: [
+                            [$class: 'ChoiceParameterDefinition',
+                                choices: ['no', 'yes'].join('\n'),
+                                name: 'input',
+                                description: 'Please Select "YES" to Build or "NO" to Abort']
+                        ]
+                    echo "The answer is: ${Delay}"
+                    if ("${Delay}" == "yes") {
+                        sh '''echo "Deploying in prod"'''
+                    } else {
+                        sh """
+                        echo "exiting not production ready branch"
+                        exit 1
+                        """
+                    }
+                }
+            }
+        }
+        stage('Remove Old Container'){
+            steps{
+              sh 'docker container rm -f web'
+             }
+          }
+        stage('Build'){
+            steps{
+              sh 'cd webapp && docker build -t muralialakuntla3/web .'
+             }
+          }
+        stage('Scanning'){
+            steps{
+              sh 'trivy image muralialakuntla3/web'
+             }
+          }
+        stage('DockerHub Login'){
+            steps{
+                sh 'echo $dockerhub_PSW | docker login -u $dockerhub_USR --password-stdin'
+             }
+          }
+        stage('Image Push'){
+            steps{
+                sh 'docker push muralialakuntla3/web'
+             }
+          }
+        stage('Remove Image'){
+            steps{
+              sh 'docker rmi muralialakuntla3/web'
+             }
+          }
+        stage('Run Container'){
+            steps{
+              sh 'docker container run -dt --name web --network lmsnetwork -p 80:80 muralialakuntla3/web'
+             }
+          }
+        stage('Email Notification') {
+              steps {
+                  emailext body: 'LMS Frontend application deployed successfully into Prod Environment', subject: 'LMS Frontend Deployment', to: 'murali@digitaledify.ai'
+                  }
+              }
+        stage('Post-Build Cleanup') {
+            steps {
+                echo "Cleaning workspace after build..."
+                cleanWs()  // Optional: Clean workspace after the build
+            }
+        }
+    }
+}
