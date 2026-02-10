@@ -2,34 +2,32 @@ services:
   local-db:
     image: postgres:16
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=itjustworks
-      - POSTGRES_DB=mydb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: itjustworks
+      POSTGRES_DB: mydb
     ports:
       - "5434:5432"
     volumes:
       - local-db-data:/var/lib/postgresql/data
-
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d mydb"]
       interval: 5s
       timeout: 5s
       retries: 20
 
-
   api-server:
     build: api/
     image: lms-public-api
     environment:
-      - MODE=local
-      - PORT=5000
-      - DATABASE_URL=postgresql://postgres:itjustworks@local-db:5432/mydb
+      MODE: local
+      PORT: "5000"
+      DATABASE_URL: postgresql://postgres:itjustworks@local-db:5432/mydb
     ports:
       - "5000:5000"
     restart: on-failure
     depends_on:
       local-db:
-           condition: service_healthy
+        condition: service_healthy
 
   web-server:
     build: webapp/
@@ -41,5 +39,4 @@ services:
 
 volumes:
   local-db-data:
-
 
