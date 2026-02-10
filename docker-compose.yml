@@ -1,4 +1,4 @@
-`services:
+services:
   local-db:
     image: postgres:16
     environment:
