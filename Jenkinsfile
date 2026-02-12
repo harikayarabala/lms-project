@@ -14,10 +14,8 @@ pipeline {
     booleanParam(name: 'FAIL_ON_TEST', defaultValue: false, description: 'Fail pipeline when tests fail')
     booleanParam(name: 'FAIL_ON_QUALITY_GATE', defaultValue: false, description: 'Fail pipeline when SonarQube gate fails')
 
-    // Sonar toggle (kept OFF by default because your SonarQube is not reachable currently)
     booleanParam(name: 'RUN_SONAR', defaultValue: false, description: 'Run SonarQube scan + Quality Gate')
 
-    // Kubernetes (KIND)
     booleanParam(name: 'DEPLOY_K8S', defaultValue: true, description: 'Deploy to Kubernetes using kubectl (KIND)')
     string(name: 'K8S_NAMESPACE', defaultValue: 'lms', description: 'Kubernetes namespace')
     string(name: 'KIND_CLUSTER', defaultValue: 'kind', description: 'KIND cluster name (kind get clusters)')
@@ -25,11 +23,15 @@ pipeline {
   }
 
   environment {
+    // ✅ FORCE Jenkins to use the correct kubeconfig (fixes "no context exists" issue)
+    KUBECONFIG = "/var/lib/jenkins/.kube/config"
+
     SONARQUBE_SERVER_NAME = "sonarqube"
     SONAR_SCANNER_TOOL    = "sonar-scanner"
-    DOCKER_BUILDKIT       = "1"
 
-    // Export params so bash -u doesn't fail
+    DOCKER_BUILDKIT = "1"
+
+    // ✅ Export params so bash -u won't fail
     K8S_NAMESPACE = "${params.K8S_NAMESPACE}"
     KIND_CLUSTER  = "${params.KIND_CLUSTER}"
     KUBE_CONTEXT  = "${params.KUBE_CONTEXT}"
@@ -54,7 +56,10 @@ pipeline {
             docker version >/dev/null 2>&1 && echo "Docker OK" || echo "Docker NOT available"
             kubectl version --client=true || true
             kind version || true
-            echo "kubectl context: $(kubectl config current-context 2>/dev/null || true)"
+
+            echo "KUBECONFIG=$KUBECONFIG"
+            kubectl --kubeconfig "$KUBECONFIG" config get-contexts || true
+            kubectl --kubeconfig "$KUBECONFIG" config current-context || true
           '
         ''')
         sh(label: 'list workspace', script: 'ls -la')
@@ -180,26 +185,28 @@ pipeline {
             NS="${K8S_NAMESPACE}"
             TAG="${BUILD_NUMBER}"
 
-            kubectl config use-context "${KUBE_CONTEXT}"
+            kubectl --kubeconfig "$KUBECONFIG" config use-context "${KUBE_CONTEXT}"
 
-            kubectl get ns "${NS}" >/dev/null 2>&1 || kubectl create ns "${NS}"
+            kubectl --kubeconfig "$KUBECONFIG" get ns "${NS}" >/dev/null 2>&1 || \
+              kubectl --kubeconfig "$KUBECONFIG" create ns "${NS}"
 
+            # Do not change repo YAML permanently
             cp -f lms-api.yaml lms-api.deploy.yaml
             cp -f lms-web.yaml lms-web.deploy.yaml
 
             sed -i "s/:IMAGE_TAG/:${TAG}/g" lms-api.deploy.yaml
             sed -i "s/:IMAGE_TAG/:${TAG}/g" lms-web.deploy.yaml
 
-            kubectl -n "${NS}" apply -f postgres.yaml
-            kubectl -n "${NS}" apply -f lms-api.deploy.yaml
-            kubectl -n "${NS}" apply -f lms-web.deploy.yaml
+            kubectl --kubeconfig "$KUBECONFIG" -n "${NS}" apply -f postgres.yaml
+            kubectl --kubeconfig "$KUBECONFIG" -n "${NS}" apply -f lms-api.deploy.yaml
+            kubectl --kubeconfig "$KUBECONFIG" -n "${NS}" apply -f lms-web.deploy.yaml
 
-            kubectl -n "${NS}" rollout status statefulset/local-db --timeout=180s
-            kubectl -n "${NS}" rollout status deploy/api-server --timeout=180s
-            kubectl -n "${NS}" rollout status deploy/web-server --timeout=180s
+            kubectl --kubeconfig "$KUBECONFIG" -n "${NS}" rollout status statefulset/local-db --timeout=180s
+            kubectl --kubeconfig "$KUBECONFIG" -n "${NS}" rollout status deploy/api-server --timeout=180s
+            kubectl --kubeconfig "$KUBECONFIG" -n "${NS}" rollout status deploy/web-server --timeout=180s
 
-            kubectl -n "${NS}" get pods -o wide
-            kubectl -n "${NS}" get svc
+            kubectl --kubeconfig "$KUBECONFIG" -n "${NS}" get pods -o wide
+            kubectl --kubeconfig "$KUBECONFIG" -n "${NS}" get svc
           '
         ''')
       }
@@ -211,9 +218,10 @@ pipeline {
         sh(label: 'print app url', script: '''
           bash -lc '
             set -euo pipefail
-            kubectl config use-context "${KUBE_CONTEXT}"
+            kubectl --kubeconfig "$KUBECONFIG" config use-context "${KUBE_CONTEXT}"
 
-            NODEPORT=$(kubectl -n "${K8S_NAMESPACE}" get svc web-server -o jsonpath="{.spec.ports[0].nodePort}")
+            NODEPORT=$(kubectl --kubeconfig "$KUBECONFIG" -n "${K8S_NAMESPACE}" get svc web-server -o jsonpath="{.spec.ports[0].nodePort}")
+
             echo "✅ App URL:"
             echo "   http://localhost:${NODEPORT}"
             echo "   http://172.30.97.180:${NODEPORT}"
@@ -228,9 +236,9 @@ pipeline {
       sh(label: 'k8s status (always)', script: '''
         bash -lc '
           set +e
-          kubectl config use-context "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
-          kubectl -n "${K8S_NAMESPACE}" get pods -o wide || true
-          kubectl -n "${K8S_NAMESPACE}" get svc || true
+          kubectl --kubeconfig "$KUBECONFIG" config use-context "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
+          kubectl --kubeconfig "$KUBECONFIG" -n "${K8S_NAMESPACE}" get pods -o wide || true
+          kubectl --kubeconfig "$KUBECONFIG" -n "${K8S_NAMESPACE}" get svc || true
         '
       ''')
     }
