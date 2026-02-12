@@ -1,34 +1,37 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-server
+  namespace: lms
+spec:
+  type: NodePort
+  selector:
+    app: web-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      nodePort: 30080
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: lms-web
+  name: web-server
   namespace: lms
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: lms-web
+      app: web-server
   template:
     metadata:
       labels:
-        app: lms-web
+        app: web-server
     spec:
       containers:
-        - name: web
-          image: lms-web:1.0
+        - name: web-server
+          image: lms-web:99
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: lms-web
-  namespace: lms
-spec:
-  selector:
-    app: lms-web
-  ports:
-    - name: http
-      port: 80
-      targetPort: 80
+

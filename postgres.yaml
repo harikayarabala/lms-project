@@ -1,17 +1,30 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Service
 metadata:
-  name: postgres
+  name: local-db
   namespace: lms
 spec:
+  ports:
+    - port: 5432
+      name: postgres
+  selector:
+    app: local-db
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: local-db
+  namespace: lms
+spec:
+  serviceName: local-db
   replicas: 1
   selector:
     matchLabels:
-      app: postgres
+      app: local-db
   template:
     metadata:
       labels:
-        app: postgres
+        app: local-db
     spec:
       containers:
         - name: postgres
@@ -20,21 +33,30 @@ spec:
             - containerPort: 5432
           env:
             - name: POSTGRES_USER
-              value: postgres
+              value: "postgres"
             - name: POSTGRES_PASSWORD
-              value: itjustworks
+              value: "itjustworks"
             - name: POSTGRES_DB
-              value: mydb
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-  namespace: lms
-spec:
-  selector:
-    app: postgres
-  ports:
-    - port: 5432
-      targetPort: 5432
+              value: "mydb"
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U postgres -d mydb"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U postgres -d mydb"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: db-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
 
