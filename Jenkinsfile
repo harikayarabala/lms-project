@@ -11,32 +11,31 @@ pipeline {
     string(name: 'GIT_URL', defaultValue: 'https://github.com/harikayarabala/lms-project.git', description: 'Git repo URL')
     string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Branch to build')
 
-    // Controls
     booleanParam(name: 'FAIL_ON_TEST', defaultValue: false, description: 'Fail pipeline when tests fail')
     booleanParam(name: 'FAIL_ON_QUALITY_GATE', defaultValue: false, description: 'Fail pipeline when SonarQube gate fails')
 
-    // Sonar (toggle)  ✅ fixes your current failure
+    // Sonar toggle (prevents your earlier failure)
     booleanParam(name: 'RUN_SONAR', defaultValue: false, description: 'Run SonarQube scan + Quality Gate')
 
-    // Kubernetes (KIND on Ubuntu)
+    // Kubernetes (KIND)
     booleanParam(name: 'DEPLOY_K8S', defaultValue: true, description: 'Deploy to Kubernetes using kubectl (KIND)')
     string(name: 'K8S_NAMESPACE', defaultValue: 'lms', description: 'Kubernetes namespace')
     string(name: 'KIND_CLUSTER', defaultValue: 'kind', description: 'KIND cluster name (kind get clusters)')
-    string(name: 'KUBE_CONTEXT', defaultValue: 'kind-kind', description: 'kubectl context name (kubectl config get-contexts)')
+    string(name: 'KUBE_CONTEXT', defaultValue: 'kind-kind', description: 'kubectl context name')
   }
 
   environment {
-    // Jenkins -> Manage Jenkins -> System -> SonarQube servers -> Name
     SONARQUBE_SERVER_NAME = "sonarqube"
-
-    // Jenkins -> Global Tool Configuration -> SonarQube Scanner -> Name
     SONAR_SCANNER_TOOL = "sonar-scanner"
-
     DOCKER_BUILDKIT = "1"
+
+    // ✅ Export params into env so bash -u won't fail
+    K8S_NAMESPACE = "${params.K8S_NAMESPACE}"
+    KIND_CLUSTER  = "${params.KIND_CLUSTER}"
+    KUBE_CONTEXT  = "${params.KUBE_CONTEXT}"
   }
 
   tools {
-    // Jenkins -> Manage Jenkins -> Tools -> NodeJS -> Name
     nodejs "node20"
   }
 
@@ -141,10 +140,6 @@ pipeline {
             def qg = waitForQualityGate abortPipeline: params.FAIL_ON_QUALITY_GATE
             echo "Quality Gate Status: ${qg.status}"
           }
-
-          if (!params.FAIL_ON_QUALITY_GATE) {
-            echo "Continuing even if Quality Gate is not OK (FAIL_ON_QUALITY_GATE=false)."
-          }
         }
       }
     }
@@ -181,12 +176,10 @@ pipeline {
             NS="${K8S_NAMESPACE}"
             TAG="${BUILD_NUMBER}"
 
-            # Force the correct kube context (fixes your boardgame vs kind mismatch)
             kubectl config use-context "${KUBE_CONTEXT}"
 
             kubectl get ns "${NS}" >/dev/null 2>&1 || kubectl create ns "${NS}"
 
-            # Avoid changing repo YAML permanently
             cp -f lms-api.yaml lms-api.deploy.yaml
             cp -f lms-web.yaml lms-web.deploy.yaml
 
@@ -211,8 +204,7 @@ pipeline {
     stage('App URL (KIND NodePort)') {
       when { expression { return params.DEPLOY_K8S } }
       steps {
-        echo "✅ If your web-server service NodePort is 30080, open:"
-        echo "   http://<jenkins-ubuntu-ip>:30080  (or http://localhost:30080 on the Jenkins machine)"
+        echo "✅ Open: http://<ubuntu-ip>:30080 (or http://localhost:30080 on Jenkins server)"
       }
     }
   }
@@ -228,11 +220,7 @@ pipeline {
         '
       ''')
     }
-    success {
-      echo "✅ Pipeline completed successfully."
-    }
-    failure {
-      echo "❌ Pipeline failed. Check stage logs above."
-    }
+    success { echo "✅ Pipeline completed successfully." }
+    failure { echo "❌ Pipeline failed. Check stage logs above." }
   }
 }
