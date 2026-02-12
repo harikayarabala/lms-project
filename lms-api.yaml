@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lms-api
+  namespace: lms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lms-api
+  template:
+    metadata:
+      labels:
+        app: lms-api
+    spec:
+      containers:
+        - name: api
+          image: lms-api:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+            - name: DATABASE_URL
+              value: "postgresql://postgres:itjustworks@postgres.lms.svc.cluster.local:5432/mydb"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lms-api
+  namespace: lms
+spec:
+  selector:
+    app: lms-api
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
