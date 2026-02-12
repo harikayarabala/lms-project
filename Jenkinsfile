@@ -17,10 +17,10 @@ pipeline {
   }
 
   environment {
-    // Jenkins -> Global Tool Configuration -> NodeJS installation name
+    // MUST match Jenkins -> Global Tool Configuration -> NodeJS installation name
     NODEJS_TOOL = 'node20'
 
-    // Jenkins -> Manage Jenkins -> System -> SonarQube servers -> Name
+    // MUST match Jenkins -> Manage Jenkins -> System -> SonarQube servers -> Name
     SONARQUBE_SERVER = 'sonarqube'
 
     API_IMAGE = 'lms-public-api'
@@ -34,62 +34,79 @@ pipeline {
         cleanWs()
         checkout scm
 
-        sh(label: 'versions', script: '''
+        sh(label: 'versions', script: '''#!/usr/bin/env bash
           set -e
-          echo "Node: $(node -v || true)"
-          echo "NPM : $(npm -v || true)"
+          echo "Shell: $SHELL"
+          echo "Node: $(node -v 2>/dev/null || true)"
+          echo "NPM : $(npm -v 2>/dev/null || true)"
           docker version >/dev/null 2>&1 && echo "Docker OK" || echo "Docker NOT available"
           kubectl version --client=true || true
           kind version || true
         ''')
 
-        sh(label: 'list workspace', script: 'ls -la')
-      }
-    }
-
-    stage('Tool Install') {
-      steps {
-        tool name: "${env.NODEJS_TOOL}", type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
+        sh(label: 'list workspace', script: '''#!/usr/bin/env bash
+          set -e
+          ls -la
+        ''')
       }
     }
 
     stage('Install Dependencies') {
       steps {
-        sh(label: 'npm ci (api + webapp)', script: '''
-          set -euo pipefail
-          if [ -d "api" ]; then (cd api && npm ci); fi
-          if [ -d "webapp" ]; then (cd webapp && npm ci); fi
-        ''')
+        script {
+          def nodeHome = tool name: "${env.NODEJS_TOOL}", type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
+          withEnv(["PATH+NODE=${nodeHome}/bin"]) {
+            sh(label: 'npm ci (api + webapp)', script: '''#!/usr/bin/env bash
+              set -euo pipefail
+              node -v
+              npm -v
+
+              if [ -d "api" ]; then (cd api && npm ci); fi
+              if [ -d "webapp" ]; then (cd webapp && npm ci); fi
+            ''')
+          }
+        }
       }
     }
 
     stage('Build') {
       steps {
-        sh(label: 'npm run build', script: '''
-          set -euo pipefail
-          if [ -d "api" ]; then (cd api && npm run build --if-present); fi
-          if [ -d "webapp" ]; then (cd webapp && npm run build --if-present); fi
-        ''')
+        script {
+          def nodeHome = tool name: "${env.NODEJS_TOOL}", type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
+          withEnv(["PATH+NODE=${nodeHome}/bin"]) {
+            sh(label: 'npm run build', script: '''#!/usr/bin/env bash
+              set -euo pipefail
+              if [ -d "api" ]; then (cd api && npm run build --if-present); fi
+              if [ -d "webapp" ]; then (cd webapp && npm run build --if-present); fi
+            ''')
+          }
+        }
       }
     }
 
     stage('Test') {
       steps {
         script {
-          int status = sh(returnStatus: true, label: 'npm test (api + webapp)', script: '''
-            set -euo pipefail
-            status=0
-            if [ -d "api" ]; then (cd api && npm test --if-present) || status=$?; fi
-            if [ -d "webapp" ]; then (cd webapp && npm test --if-present) || status=$?; fi
-            exit $status
-          ''')
+          def nodeHome = tool name: "${env.NODEJS_TOOL}", type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
+          withEnv(["PATH+NODE=${nodeHome}/bin"]) {
 
-          if (status != 0) {
-            echo "⚠️ Tests returned non-zero exit code: ${status}"
-            if (params.FAIL_ON_TEST) {
-              error("FAIL_ON_TEST=true → failing pipeline due to test failure")
-            } else {
-              echo "Continuing pipeline (FAIL_ON_TEST=false)"
+            int status = sh(returnStatus: true, label: 'npm test (api + webapp)', script: '''#!/usr/bin/env bash
+              set -euo pipefail
+              status=0
+
+              if [ -d "api" ]; then (cd api && npm test --if-present) || status=$?; fi
+              if [ -d "webapp" ]; then (cd webapp && npm test --if-present) || status=$?; fi
+
+              exit $status
+            ''')
+
+            if (status != 0) {
+              echo "⚠️ Tests returned non-zero exit code: ${status}"
+              if (params.FAIL_ON_TEST) {
+                error("FAIL_ON_TEST=true → failing pipeline due to test failure")
+              } else {
+                echo "Continuing pipeline (FAIL_ON_TEST=false)"
+              }
             }
           }
         }
@@ -99,11 +116,16 @@ pipeline {
     stage('SonarQube Scan') {
       when { expression { return params.RUN_SONAR } }
       steps {
-        withSonarQubeEnv("${env.SONARQUBE_SERVER}") {
-          sh(label: 'sonar-scanner', script: '''
-            set -euo pipefail
-            sonar-scanner
-          ''')
+        script {
+          def nodeHome = tool name: "${env.NODEJS_TOOL}", type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
+          withEnv(["PATH+NODE=${nodeHome}/bin"]) {
+            withSonarQubeEnv("${env.SONARQUBE_SERVER}") {
+              sh(label: 'sonar-scanner', script: '''#!/usr/bin/env bash
+                set -euo pipefail
+                sonar-scanner
+              ''')
+            }
+          }
         }
       }
     }
@@ -119,7 +141,7 @@ pipeline {
 
     stage('Docker Build + Load into KIND') {
       steps {
-        sh(label: 'docker build + kind load', script: '''
+        sh(label: 'docker build + kind load', script: '''#!/usr/bin/env bash
           set -euo pipefail
           TAG="${BUILD_NUMBER}"
 
@@ -139,7 +161,7 @@ pipeline {
 
     stage('Deploy to Kubernetes') {
       steps {
-        sh(label: 'kubectl apply + rollout', script: '''
+        sh(label: 'kubectl apply + rollout', script: '''#!/usr/bin/env bash
           set -euo pipefail
           NS="${K8S_NAMESPACE}"
           TAG="${BUILD_NUMBER}"
@@ -158,7 +180,6 @@ pipeline {
           kubectl -n "${NS}" apply -f lms-api.deploy.yaml
           kubectl -n "${NS}" apply -f lms-web.deploy.yaml
 
-          kubectl -n "${NS}" rollout status statefulset/local-db --timeout=180s || true
           kubectl -n "${NS}" rollout status deploy/api-server --timeout=180s
           kubectl -n "${NS}" rollout status deploy/web-server --timeout=180s
 
@@ -170,13 +191,13 @@ pipeline {
 
     stage('App URL (KIND NodePort)') {
       steps {
-        sh(label: 'print URL', script: '''
+        sh(label: 'print URL', script: '''#!/usr/bin/env bash
           set -euo pipefail
           kubectl config use-context "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
 
           NODE_IP="$(ip -4 a | awk '/inet / && $2 !~ /^127/ {print $2}' | head -n1 | cut -d/ -f1 || true)"
 
-          echo "✅ App should be reachable on NodePort:"
+          echo "✅ App URL:"
           echo "   http://${NODE_IP}:${WEB_NODEPORT}"
           echo ""
           echo "If NODE_IP is empty / blocked, use port-forward:"
@@ -188,7 +209,7 @@ pipeline {
 
   post {
     always {
-      sh(label: 'k8s status (always)', script: '''
+      sh(label: 'k8s status (always)', script: '''#!/usr/bin/env bash
         set +e
         kubectl config use-context "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
         kubectl -n "${K8S_NAMESPACE}" get pods -o wide || true
@@ -196,7 +217,6 @@ pipeline {
       ''')
       archiveArtifacts artifacts: '**/lms-*.deploy.yaml', allowEmptyArchive: true
     }
-
     success { echo "✅ Pipeline succeeded." }
     failure { echo "❌ Pipeline failed. Check stage logs above." }
   }
