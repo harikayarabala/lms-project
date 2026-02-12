@@ -14,7 +14,7 @@ pipeline {
     booleanParam(name: 'FAIL_ON_TEST', defaultValue: false, description: 'Fail pipeline when tests fail')
     booleanParam(name: 'FAIL_ON_QUALITY_GATE', defaultValue: false, description: 'Fail pipeline when SonarQube gate fails')
 
-    // Sonar toggle (prevents your earlier failure)
+    // Sonar toggle (kept OFF by default because your SonarQube is not reachable currently)
     booleanParam(name: 'RUN_SONAR', defaultValue: false, description: 'Run SonarQube scan + Quality Gate')
 
     // Kubernetes (KIND)
@@ -26,10 +26,10 @@ pipeline {
 
   environment {
     SONARQUBE_SERVER_NAME = "sonarqube"
-    SONAR_SCANNER_TOOL = "sonar-scanner"
-    DOCKER_BUILDKIT = "1"
+    SONAR_SCANNER_TOOL    = "sonar-scanner"
+    DOCKER_BUILDKIT       = "1"
 
-    // ✅ Export params into env so bash -u won't fail
+    // Export params so bash -u doesn't fail
     K8S_NAMESPACE = "${params.K8S_NAMESPACE}"
     KIND_CLUSTER  = "${params.KIND_CLUSTER}"
     KUBE_CONTEXT  = "${params.KUBE_CONTEXT}"
@@ -54,6 +54,7 @@ pipeline {
             docker version >/dev/null 2>&1 && echo "Docker OK" || echo "Docker NOT available"
             kubectl version --client=true || true
             kind version || true
+            echo "kubectl context: $(kubectl config current-context 2>/dev/null || true)"
           '
         ''')
         sh(label: 'list workspace', script: 'ls -la')
@@ -140,6 +141,9 @@ pipeline {
             def qg = waitForQualityGate abortPipeline: params.FAIL_ON_QUALITY_GATE
             echo "Quality Gate Status: ${qg.status}"
           }
+          if (!params.FAIL_ON_QUALITY_GATE) {
+            echo "Continuing even if Quality Gate is not OK (FAIL_ON_QUALITY_GATE=false)."
+          }
         }
       }
     }
@@ -204,7 +208,17 @@ pipeline {
     stage('App URL (KIND NodePort)') {
       when { expression { return params.DEPLOY_K8S } }
       steps {
-        echo "✅ Open: http://<ubuntu-ip>:30080 (or http://localhost:30080 on Jenkins server)"
+        sh(label: 'print app url', script: '''
+          bash -lc '
+            set -euo pipefail
+            kubectl config use-context "${KUBE_CONTEXT}"
+
+            NODEPORT=$(kubectl -n "${K8S_NAMESPACE}" get svc web-server -o jsonpath="{.spec.ports[0].nodePort}")
+            echo "✅ App URL:"
+            echo "   http://localhost:${NODEPORT}"
+            echo "   http://172.30.97.180:${NODEPORT}"
+          '
+        ''')
       }
     }
   }
