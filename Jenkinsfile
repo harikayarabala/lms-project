@@ -1,13 +1,8 @@
-// Jenkinsfile — LMS (api + webapp) -> Docker -> KIND -> Kubernetes
-// Works with: Docker, kind, kubectl on Jenkins agent
-// Optional: SonarQube scan + Quality Gate
-
 pipeline {
   agent any
 
   options {
     timestamps()
-    ansiColor('xterm')
     buildDiscarder(logRotator(numToKeepStr: '20'))
     disableConcurrentBuilds()
   }
@@ -28,7 +23,6 @@ pipeline {
     // Jenkins -> Manage Jenkins -> System -> SonarQube servers -> Name
     SONARQUBE_SERVER = 'sonarqube'
 
-    // Docker image names
     API_IMAGE = 'lms-public-api'
     WEB_IMAGE = 'lms-web'
   }
@@ -55,7 +49,6 @@ pipeline {
 
     stage('Tool Install') {
       steps {
-        // This injects NODE_HOME and updates PATH for Node
         tool name: "${env.NODEJS_TOOL}", type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
       }
     }
@@ -109,7 +102,6 @@ pipeline {
         withSonarQubeEnv("${env.SONARQUBE_SERVER}") {
           sh(label: 'sonar-scanner', script: '''
             set -euo pipefail
-            # Uses sonar-project.properties in repo
             sonar-scanner
           ''')
         }
@@ -152,12 +144,10 @@ pipeline {
           NS="${K8S_NAMESPACE}"
           TAG="${BUILD_NUMBER}"
 
-          # Ensure correct context (your issue before)
           kubectl config use-context "${KUBE_CONTEXT}"
 
           kubectl get ns "${NS}" >/dev/null 2>&1 || kubectl create ns "${NS}"
 
-          # Don't modify repo files permanently
           cp -f lms-api.yaml lms-api.deploy.yaml
           cp -f lms-web.yaml lms-web.deploy.yaml
 
@@ -184,13 +174,12 @@ pipeline {
           set -euo pipefail
           kubectl config use-context "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
 
-          # Try to get node IP (KIND usually local)
           NODE_IP="$(ip -4 a | awk '/inet / && $2 !~ /^127/ {print $2}' | head -n1 | cut -d/ -f1 || true)"
 
           echo "✅ App should be reachable on NodePort:"
           echo "   http://${NODE_IP}:${WEB_NODEPORT}"
           echo ""
-          echo "If NODE_IP is empty (WSL/network), use localhost via port-forward:"
+          echo "If NODE_IP is empty / blocked, use port-forward:"
           echo "  kubectl -n ${K8S_NAMESPACE} port-forward svc/web-server 8090:80 --address 0.0.0.0"
         ''')
       }
@@ -208,12 +197,7 @@ pipeline {
       archiveArtifacts artifacts: '**/lms-*.deploy.yaml', allowEmptyArchive: true
     }
 
-    success {
-      echo "✅ Pipeline succeeded."
-    }
-
-    failure {
-      echo "❌ Pipeline failed. Check stage logs above."
-    }
+    success { echo "✅ Pipeline succeeded." }
+    failure { echo "❌ Pipeline failed. Check stage logs above." }
   }
 }
