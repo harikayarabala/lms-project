@@ -10,6 +10,7 @@ pipeline {
   parameters {
     booleanParam(name: 'FAIL_ON_TEST', defaultValue: false, description: 'Fail pipeline if tests fail')
     booleanParam(name: 'RUN_SONAR', defaultValue: true, description: 'Run SonarQube scan + Quality Gate')
+    booleanParam(name: 'FAIL_ON_SONAR', defaultValue: true, description: 'Fail pipeline if Sonar scan fails')
     string(name: 'K8S_NAMESPACE', defaultValue: 'lms', description: 'Kubernetes namespace')
     string(name: 'KIND_CLUSTER', defaultValue: 'kind', description: 'KIND cluster name')
     string(name: 'KUBE_CONTEXT', defaultValue: 'kind-kind', description: 'kubectl context name')
@@ -17,11 +18,15 @@ pipeline {
   }
 
   environment {
-    // MUST match Jenkins -> Global Tool Configuration -> NodeJS installation name
+    // Jenkins -> Global Tool Configuration -> NodeJS installation name
     NODEJS_TOOL = 'node20'
 
-    // MUST match Jenkins -> Manage Jenkins -> System -> SonarQube servers -> Name
+    // Jenkins -> Manage Jenkins -> System -> SonarQube servers -> Name
     SONARQUBE_SERVER = 'sonarqube'
+
+    // OPTIONAL: Jenkins -> Global Tool Configuration -> SonarScanner installation name
+    // If you don't have this tool, pipeline will fallback to npx sonar-scanner
+    SONAR_SCANNER_TOOL = 'SonarScanner'
 
     API_IMAGE = 'lms-public-api'
     WEB_IMAGE = 'lms-web'
@@ -60,7 +65,6 @@ pipeline {
               set -euo pipefail
               node -v
               npm -v
-
               if [ -d "api" ]; then (cd api && npm ci); fi
               if [ -d "webapp" ]; then (cd webapp && npm ci); fi
             ''')
@@ -93,10 +97,8 @@ pipeline {
             int status = sh(returnStatus: true, label: 'npm test (api + webapp)', script: '''#!/usr/bin/env bash
               set -euo pipefail
               status=0
-
               if [ -d "api" ]; then (cd api && npm test --if-present) || status=$?; fi
               if [ -d "webapp" ]; then (cd webapp && npm test --if-present) || status=$?; fi
-
               exit $status
             ''')
 
@@ -120,10 +122,38 @@ pipeline {
           def nodeHome = tool name: "${env.NODEJS_TOOL}", type: 'jenkins.plugins.nodejs.tools.NodeJSInstallation'
           withEnv(["PATH+NODE=${nodeHome}/bin"]) {
             withSonarQubeEnv("${env.SONARQUBE_SERVER}") {
-              sh(label: 'sonar-scanner', script: '''#!/usr/bin/env bash
-                set -euo pipefail
-                sonar-scanner
-              ''')
+
+              // Try Jenkins SonarScanner tool; if not found, fallback to npx sonar-scanner
+              def scannerHome = null
+              try {
+                scannerHome = tool name: "${env.SONAR_SCANNER_TOOL}", type: 'hudson.plugins.sonar.SonarRunnerInstallation'
+              } catch (ignored) {
+                scannerHome = null
+              }
+
+              int sonarStatus = 0
+              if (scannerHome) {
+                withEnv(["PATH+SONAR=${scannerHome}/bin"]) {
+                  sonarStatus = sh(returnStatus: true, label: 'sonar-scanner (tool)', script: '''#!/usr/bin/env bash
+                    set -euo pipefail
+                    sonar-scanner
+                  ''')
+                }
+              } else {
+                sonarStatus = sh(returnStatus: true, label: 'sonar-scanner (npx fallback)', script: '''#!/usr/bin/env bash
+                  set -euo pipefail
+                  npx --yes sonar-scanner
+                ''')
+              }
+
+              if (sonarStatus != 0) {
+                echo "❌ Sonar scan failed with exit code: ${sonarStatus}"
+                if (params.FAIL_ON_SONAR) {
+                  error("FAIL_ON_SONAR=true → failing pipeline due to sonar failure")
+                } else {
+                  echo "Continuing pipeline (FAIL_ON_SONAR=false)"
+                }
+              }
             }
           }
         }
@@ -131,9 +161,9 @@ pipeline {
     }
 
     stage('Quality Gate') {
-      when { expression { return params.RUN_SONAR } }
+      when { expression { return params.RUN_SONAR && params.FAIL_ON_SONAR } }
       steps {
-        timeout(time: 3, unit: 'MINUTES') {
+        timeout(time: 5, unit: 'MINUTES') {
           waitForQualityGate abortPipeline: true
         }
       }
@@ -144,17 +174,10 @@ pipeline {
         sh(label: 'docker build + kind load', script: '''#!/usr/bin/env bash
           set -euo pipefail
           TAG="${BUILD_NUMBER}"
-
           docker build -t ${API_IMAGE}:${TAG} api/
           docker build -t ${WEB_IMAGE}:${TAG} webapp/
-
-          echo "KIND clusters:"
-          kind get clusters
-
           kind load docker-image ${API_IMAGE}:${TAG} --name "${KIND_CLUSTER}"
           kind load docker-image ${WEB_IMAGE}:${TAG} --name "${KIND_CLUSTER}"
-
-          echo "Loaded images into KIND cluster: ${KIND_CLUSTER}"
         ''')
       }
     }
@@ -167,12 +190,10 @@ pipeline {
           TAG="${BUILD_NUMBER}"
 
           kubectl config use-context "${KUBE_CONTEXT}"
-
           kubectl get ns "${NS}" >/dev/null 2>&1 || kubectl create ns "${NS}"
 
           cp -f lms-api.yaml lms-api.deploy.yaml
           cp -f lms-web.yaml lms-web.deploy.yaml
-
           sed -i "s/:IMAGE_TAG/:${TAG}/g" lms-api.deploy.yaml
           sed -i "s/:IMAGE_TAG/:${TAG}/g" lms-web.deploy.yaml
 
@@ -193,14 +214,10 @@ pipeline {
       steps {
         sh(label: 'print URL', script: '''#!/usr/bin/env bash
           set -euo pipefail
-          kubectl config use-context "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
-
           NODE_IP="$(ip -4 a | awk '/inet / && $2 !~ /^127/ {print $2}' | head -n1 | cut -d/ -f1 || true)"
-
           echo "✅ App URL:"
           echo "   http://${NODE_IP}:${WEB_NODEPORT}"
-          echo ""
-          echo "If NODE_IP is empty / blocked, use port-forward:"
+          echo "Port-forward example:"
           echo "  kubectl -n ${K8S_NAMESPACE} port-forward svc/web-server 8090:80 --address 0.0.0.0"
         ''')
       }
