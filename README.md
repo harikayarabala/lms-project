@@ -705,3 +705,266 @@ PostgreSQL runs as a ClusterIP service, backend connects using internal DNS, and
 I validated using port-forward and rollout status.
 
 
+Kubernetes Automation Documentation (Jenkins + Docker + KIND)
+1) Overview
+
+This project uses Jenkins Pipeline to automate:
+
+✅ Code checkout from GitHub
+
+✅ Install dependencies (Node/NPM)
+
+✅ Build API + Webapp
+
+✅ Run unit tests (Vitest)
+
+✅ SonarQube code scan + Quality Gate
+
+✅ Docker image build (API + Web)
+
+✅ Load images into KIND cluster
+
+✅ Deploy manifests to Kubernetes
+
+✅ Print application URL (NodePort)
+
+2) Prerequisites
+Jenkins Server (Agent/Node) must have:
+
+Jenkins (Pipeline plugin enabled)
+
+Docker
+
+kubectl
+
+kind
+
+NodeJS (configured in Jenkins tools)
+
+SonarQube Scanner (installed OR container-based run)
+
+Access to Kubernetes context (kind-kind)
+
+Check versions:
+
+docker --version
+kubectl version --client=true
+kind version
+node -v
+npm -v
+
+3) Required Jenkins Plugins
+
+Install these plugins:
+
+Pipeline
+
+Git
+
+SonarQube Scanner for Jenkins
+
+Quality Gates (SonarQube)
+
+Credentials Binding
+
+4) Jenkins Credentials Setup
+A) SonarQube Token
+
+Go to: Jenkins → Manage Jenkins → Credentials
+
+Add:
+
+Kind: Secret text
+
+ID: sonarqube-token
+
+Secret: (paste your SonarQube token)
+
+B) SonarQube Server Config
+
+Jenkins → Manage Jenkins → Configure System
+
+SonarQube servers:
+
+Name: sonarqube
+
+Server URL: http://172.30.97.180:9001
+
+Authentication token: select sonarqube-token
+
+5) Kubernetes Cluster Setup (KIND)
+Verify cluster exists:
+kind get clusters
+kubectl config get-contexts
+kubectl config current-context
+kubectl get nodes
+
+
+Expected:
+
+context: kind-kind
+
+node: kind-control-plane (Ready)
+
+6) Kubernetes Namespace & Resources
+
+Namespace used:
+
+lms
+
+Verify:
+
+kubectl -n lms get pods -o wide
+kubectl -n lms get svc
+
+
+Expected services:
+
+api-server (ClusterIP 5000)
+
+web-server (NodePort 30080)
+
+7) Pipeline Flow (What Each Stage Does)
+Stage 1: Checkout
+
+Pulls latest code from GitHub
+
+Stage 2: Install Dependencies
+
+Runs:
+
+npm ci in api/
+
+npm ci in webapp/
+
+Stage 3: Build
+
+Runs:
+
+API: npm run build
+
+Web: npm run build
+
+Stage 4: Test
+
+Runs:
+
+Web tests: npm test
+(If FAIL_ON_TEST=false, pipeline continues even if tests fail)
+
+Stage 5: SonarQube Scan
+
+Runs:
+
+sonar-scanner
+
+Stage 6: Quality Gate
+
+Waits for SonarQube result:
+
+PASS → continue
+
+FAIL → pipeline fails (optional)
+
+Stage 7: Docker Build + Load into KIND
+
+Build images:
+
+docker build -t lms-public-api:$TAG api/
+
+docker build -t lms-web:$TAG webapp/
+
+Load into kind:
+
+kind load docker-image ... --name kind
+
+Stage 8: Deploy to Kubernetes
+
+Applies YAML manifests:
+
+postgres.yaml
+
+lms-api.yaml
+
+lms-web.yaml
+
+Rollout check:
+
+kubectl rollout status ...
+
+Stage 9: Print App URL
+
+Fetch node IP and print:
+
+http://<node-ip>:30080
+
+8) Accessing the Application
+Option A (NodePort)
+kubectl -n lms get svc web-server
+
+
+Open:
+
+http://<NODE_IP>:30080
+
+Option B (Port Forward)
+
+If NodePort not reachable:
+
+kubectl -n lms port-forward svc/web-server 8090:80 --address 0.0.0.0
+
+
+Open:
+
+http://<NODE_IP>:8090
+
+9) Common Issues & Fixes
+Issue: error: no context exists with the name kind-kind
+
+Fix:
+
+sudo -u jenkins kubectl config get-contexts
+sudo -u jenkins kubectl config use-context kind-kind
+
+Issue: Node/NPM not found in Jenkins
+
+Fix:
+
+Manage Jenkins → Global Tool Configuration → NodeJS
+
+Use tool('node20') in Jenkinsfile
+
+Issue: Webapp API calls failing (504 upstream timeout)
+
+Fix:
+
+Ensure Nginx proxy passes to correct service:
+
+/api/ → api-server:5000 OR correct API service
+
+Issue: Port already in use during port-forward
+
+Fix:
+
+sudo lsof -i :8080
+sudo kill -9 <PID>
+
+
+Or use different port:
+
+kubectl port-forward svc/web-server 8090:80 --address 0.0.0.0
+
+10) Validation Commands (Quick Health Check)
+kubectl -n lms get pods
+kubectl -n lms get svc
+kubectl -n lms logs deploy/web-server --tail=50
+kubectl -n lms logs deploy/api-server --tail=50
+
+
+Test internal API connectivity:
+
+kubectl -n lms run curltest --rm -it --image=curlimages/curl -- \
+  sh -lc 'curl -sS -i http://api-server:5000/api/courses | head -n 20'
+
+
+
