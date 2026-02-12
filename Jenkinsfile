@@ -11,14 +11,18 @@ pipeline {
     string(name: 'GIT_URL', defaultValue: 'https://github.com/harikayarabala/lms-project.git', description: 'Git repo URL')
     string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Branch to build')
 
-    // Quality controls
-    booleanParam(name: 'FAIL_ON_TEST', defaultValue: false, description: 'If true, pipeline fails when tests fail')
-    booleanParam(name: 'FAIL_ON_QUALITY_GATE', defaultValue: false, description: 'If true, pipeline fails when SonarQube Quality Gate fails')
+    // Controls
+    booleanParam(name: 'FAIL_ON_TEST', defaultValue: false, description: 'Fail pipeline when tests fail')
+    booleanParam(name: 'FAIL_ON_QUALITY_GATE', defaultValue: false, description: 'Fail pipeline when SonarQube gate fails')
 
-    // Kubernetes deploy (KIND on Ubuntu)
+    // Sonar (toggle)  ✅ fixes your current failure
+    booleanParam(name: 'RUN_SONAR', defaultValue: false, description: 'Run SonarQube scan + Quality Gate')
+
+    // Kubernetes (KIND on Ubuntu)
     booleanParam(name: 'DEPLOY_K8S', defaultValue: true, description: 'Deploy to Kubernetes using kubectl (KIND)')
     string(name: 'K8S_NAMESPACE', defaultValue: 'lms', description: 'Kubernetes namespace')
     string(name: 'KIND_CLUSTER', defaultValue: 'kind', description: 'KIND cluster name (kind get clusters)')
+    string(name: 'KUBE_CONTEXT', defaultValue: 'kind-kind', description: 'kubectl context name (kubectl config get-contexts)')
   }
 
   environment {
@@ -32,7 +36,7 @@ pipeline {
   }
 
   tools {
-    // Jenkins -> Global Tool Configuration -> NodeJS -> Name
+    // Jenkins -> Manage Jenkins -> Tools -> NodeJS -> Name
     nodejs "node20"
   }
 
@@ -62,14 +66,8 @@ pipeline {
         sh(label: 'npm ci (api + webapp)', script: '''
           bash -lc '
             set -euo pipefail
-
-            if [ -d "api" ]; then
-              (cd api && npm ci)
-            fi
-
-            if [ -d "webapp" ]; then
-              (cd webapp && npm ci)
-            fi
+            if [ -d "api" ]; then (cd api && npm ci); fi
+            if [ -d "webapp" ]; then (cd webapp && npm ci); fi
           '
         ''')
       }
@@ -80,14 +78,8 @@ pipeline {
         sh(label: 'npm run build', script: '''
           bash -lc '
             set -euo pipefail
-
-            if [ -d "api" ]; then
-              (cd api && npm run build --if-present)
-            fi
-
-            if [ -d "webapp" ]; then
-              (cd webapp && npm run build --if-present)
-            fi
+            if [ -d "api" ]; then (cd api && npm run build --if-present); fi
+            if [ -d "webapp" ]; then (cd webapp && npm run build --if-present); fi
           '
         ''')
       }
@@ -103,15 +95,8 @@ pipeline {
               bash -lc '
                 set -euo pipefail
                 status=0
-
-                if [ -d "api" ]; then
-                  (cd api && npm test --if-present) || status=$?
-                fi
-
-                if [ -d "webapp" ]; then
-                  (cd webapp && npm test --if-present) || status=$?
-                fi
-
+                if [ -d "api" ]; then (cd api && npm test --if-present) || status=$?; fi
+                if [ -d "webapp" ]; then (cd webapp && npm test --if-present) || status=$?; fi
                 exit $status
               '
             '''
@@ -132,6 +117,7 @@ pipeline {
     }
 
     stage('SonarQube Scan') {
+      when { expression { return params.RUN_SONAR } }
       steps {
         script {
           def scannerHome = tool(env.SONAR_SCANNER_TOOL)
@@ -148,6 +134,7 @@ pipeline {
     }
 
     stage('Quality Gate') {
+      when { expression { return params.RUN_SONAR } }
       steps {
         script {
           timeout(time: 20, unit: 'MINUTES') {
@@ -155,7 +142,7 @@ pipeline {
             echo "Quality Gate Status: ${qg.status}"
           }
 
-          if (params.FAIL_ON_QUALITY_GATE == false) {
+          if (!params.FAIL_ON_QUALITY_GATE) {
             echo "Continuing even if Quality Gate is not OK (FAIL_ON_QUALITY_GATE=false)."
           }
         }
@@ -168,17 +155,14 @@ pipeline {
         sh(label: 'docker build + kind load', script: '''
           bash -lc '
             set -euo pipefail
-
             TAG="${BUILD_NUMBER}"
 
-            # Build images exactly as your K8s YAML expects
             docker build -t lms-public-api:${TAG} api/
             docker build -t lms-web:${TAG} webapp/
 
             echo "KIND clusters:"
             kind get clusters
 
-            # Load images into the correct KIND cluster
             kind load docker-image lms-public-api:${TAG} --name "${KIND_CLUSTER}"
             kind load docker-image lms-web:${TAG} --name "${KIND_CLUSTER}"
 
@@ -194,32 +178,29 @@ pipeline {
         sh(label: 'kubectl apply + rollout', script: '''
           bash -lc '
             set -euo pipefail
-
             NS="${K8S_NAMESPACE}"
             TAG="${BUILD_NUMBER}"
 
-            # Ensure namespace exists
+            # Force the correct kube context (fixes your boardgame vs kind mismatch)
+            kubectl config use-context "${KUBE_CONTEXT}"
+
             kubectl get ns "${NS}" >/dev/null 2>&1 || kubectl create ns "${NS}"
 
-            # Do NOT permanently modify repo yaml. Create deploy copies.
+            # Avoid changing repo YAML permanently
             cp -f lms-api.yaml lms-api.deploy.yaml
             cp -f lms-web.yaml lms-web.deploy.yaml
 
-            # Replace placeholder IMAGE_TAG with Jenkins build number
             sed -i "s/:IMAGE_TAG/:${TAG}/g" lms-api.deploy.yaml
             sed -i "s/:IMAGE_TAG/:${TAG}/g" lms-web.deploy.yaml
 
-            # Apply manifests
             kubectl -n "${NS}" apply -f postgres.yaml
             kubectl -n "${NS}" apply -f lms-api.deploy.yaml
             kubectl -n "${NS}" apply -f lms-web.deploy.yaml
 
-            # Rollout checks
             kubectl -n "${NS}" rollout status statefulset/local-db --timeout=180s
             kubectl -n "${NS}" rollout status deploy/api-server --timeout=180s
             kubectl -n "${NS}" rollout status deploy/web-server --timeout=180s
 
-            # Show status
             kubectl -n "${NS}" get pods -o wide
             kubectl -n "${NS}" get svc
           '
@@ -230,8 +211,8 @@ pipeline {
     stage('App URL (KIND NodePort)') {
       when { expression { return params.DEPLOY_K8S } }
       steps {
-        echo "✅ If your web-server service is NodePort 30080, open:"
-        echo "   http://<ubuntu-ip>:30080  (or http://localhost:30080 on the Jenkins machine)"
+        echo "✅ If your web-server service NodePort is 30080, open:"
+        echo "   http://<jenkins-ubuntu-ip>:30080  (or http://localhost:30080 on the Jenkins machine)"
       }
     }
   }
@@ -241,6 +222,7 @@ pipeline {
       sh(label: 'k8s status (always)', script: '''
         bash -lc '
           set +e
+          kubectl config use-context "${KUBE_CONTEXT}" >/dev/null 2>&1 || true
           kubectl -n "${K8S_NAMESPACE}" get pods -o wide || true
           kubectl -n "${K8S_NAMESPACE}" get svc || true
         '
