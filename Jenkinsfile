@@ -8,13 +8,16 @@ pipeline {
   }
 
   environment {
-    AWS_REGION   = "ap-south-1"
-    EKS_CLUSTER  = "ekswithavinash"
-    NAMESPACE    = "lms"
+    AWS_REGION  = "ap-south-1"
+    EKS_CLUSTER = "ekswithavinash"
+    NAMESPACE   = "lms"
 
-    API_REPO     = "lms-public-api"
-    WEB_REPO     = "lms-web"
-    TAG          = "${BUILD_NUMBER}"
+    API_REPO    = "lms-public-api"
+    WEB_REPO    = "lms-web"
+
+    TAG         = "${BUILD_NUMBER}"
+    // Helps node builds on smaller machines
+    NODE_OPTIONS = "--max-old-space-size=768"
   }
 
   stages {
@@ -43,13 +46,13 @@ pipeline {
       steps {
         sh '''
           set -euo pipefail
-          (cd api && npm ci)
-          (cd webapp && npm ci)
+          (cd api && npm ci --no-audit --no-fund)
+          (cd webapp && npm ci --no-audit --no-fund)
         '''
       }
     }
 
-    stage('Build') {
+    stage('Build App') {
       steps {
         sh '''
           set -euo pipefail
@@ -63,13 +66,13 @@ pipeline {
       steps {
         sh '''
           set -euo pipefail
-          docker build -t ${API_REPO}:${TAG} api/
-          docker build -t ${WEB_REPO}:${TAG} webapp/
+          docker build -t ${API_REPO}:${TAG} api
+          docker build -t ${WEB_REPO}:${TAG} webapp
         '''
       }
     }
 
-    stage('Push to ECR') {
+    stage('Login & Push to ECR') {
       steps {
         sh '''
           set -euo pipefail
@@ -117,12 +120,11 @@ pipeline {
 
           kubectl get ns ${NAMESPACE} >/dev/null 2>&1 || kubectl create ns ${NAMESPACE}
 
-          # Apply your manifests
           kubectl -n ${NAMESPACE} apply -f postgres.yaml
           kubectl -n ${NAMESPACE} apply -f lms-api.yaml
           kubectl -n ${NAMESPACE} apply -f lms-web.yaml
 
-          # Patch images to ECR images
+          # Update images (must match your deployment & container names)
           kubectl -n ${NAMESPACE} set image deploy/api-server api-server=${ECR}/${API_REPO}:${TAG} --record
           kubectl -n ${NAMESPACE} set image deploy/web-server web-server=${ECR}/${WEB_REPO}:${TAG} --record
 
