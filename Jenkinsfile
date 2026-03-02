@@ -1,30 +1,25 @@
 pipeline {
   agent any
 
-  options {
-    timestamps()
-  }
+  options { timestamps() }
 
   environment {
-    AWS_REGION   = "ap-south-1"
-    AWS_ACCOUNT  = "032073356223"
-    EKS_CLUSTER  = "ekswithlms"
-    NAMESPACE    = "lms"
+    AWS_REGION  = "ap-south-1"
+    AWS_ACCOUNT = "032073356223"
+    EKS_CLUSTER = "ekswithlms"
+    NAMESPACE   = "lms"
 
     ECR_REGISTRY  = "${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-    BACKEND_REPO  = "lms-backend"
-    FRONTEND_REPO = "lms-frontend"
+    API_REPO      = "lms-backend"
+    WEB_REPO      = "lms-frontend"
 
-    // ✅ repo paths (based on your Jenkins workspace output)
-    BACKEND_DIR  = "api"
-    FRONTEND_DIR = "webapp"
+    API_DIR  = "api"
+    WEB_DIR  = "webapp"
 
-    // build tag
     IMAGE_TAG = "${BUILD_NUMBER}"
   }
 
   stages {
-
     stage("Checkout") {
       steps {
         git branch: "main", url: "https://github.com/harikayarabala/lms-project.git"
@@ -35,23 +30,13 @@ pipeline {
       steps {
         sh """
           set -e
-          echo "AWS:"
           aws --version
-
-          echo "kubectl:"
           kubectl version --client=true
-
-          echo "Docker:"
           docker --version
 
-          echo "Workspace files:"
           ls -la
-
-          echo "Repo folders:"
-          ls -la ${BACKEND_DIR}
-          ls -la ${FRONTEND_DIR}
-
-          echo "YAML files in root:"
+          ls -la ${API_DIR}
+          ls -la ${WEB_DIR}
           ls -la postgres.yaml lms-api.yaml lms-web.yaml
         """
       }
@@ -67,24 +52,24 @@ pipeline {
       }
     }
 
-    stage("Build & Push Backend (api)") {
+    stage("Build & Push API (api/)") {
       steps {
         sh """
           set -e
-          docker build -t ${BACKEND_REPO}:${IMAGE_TAG} ${BACKEND_DIR}
-          docker tag ${BACKEND_REPO}:${IMAGE_TAG} ${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG}
-          docker push ${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG}
+          docker build -t ${API_REPO}:${IMAGE_TAG} ${API_DIR}
+          docker tag ${API_REPO}:${IMAGE_TAG} ${ECR_REGISTRY}/${API_REPO}:${IMAGE_TAG}
+          docker push ${ECR_REGISTRY}/${API_REPO}:${IMAGE_TAG}
         """
       }
     }
 
-    stage("Build & Push Frontend (webapp)") {
+    stage("Build & Push WEB (webapp/)") {
       steps {
         sh """
           set -e
-          docker build -t ${FRONTEND_REPO}:${IMAGE_TAG} ${FRONTEND_DIR}
-          docker tag ${FRONTEND_REPO}:${IMAGE_TAG} ${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG}
-          docker push ${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG}
+          docker build -t ${WEB_REPO}:${IMAGE_TAG} ${WEB_DIR}
+          docker tag ${WEB_REPO}:${IMAGE_TAG} ${ECR_REGISTRY}/${WEB_REPO}:${IMAGE_TAG}
+          docker push ${ECR_REGISTRY}/${WEB_REPO}:${IMAGE_TAG}
         """
       }
     }
@@ -94,9 +79,7 @@ pipeline {
         sh """
           set -e
           aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}
-
           kubectl get nodes
-
           kubectl get ns ${NAMESPACE} || kubectl create ns ${NAMESPACE}
         """
       }
@@ -110,7 +93,8 @@ pipeline {
           kubectl apply -n ${NAMESPACE} -f lms-api.yaml
           kubectl apply -n ${NAMESPACE} -f lms-web.yaml
 
-          kubectl get all -n ${NAMESPACE}
+          kubectl get deploy -n ${NAMESPACE}
+          kubectl get svc -n ${NAMESPACE}
         """
       }
     }
@@ -120,24 +104,19 @@ pipeline {
         sh """
           set -e
 
-          # ============================================================
-          # IMPORTANT: Update deployment + container names if different.
-          # Use:
-          # kubectl get deploy -n ${NAMESPACE}
-          # kubectl get deploy <name> -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}'
-          # ============================================================
+          # ✅ Matches your YAML:
+          # deployment: api-server, container: api-server
+          kubectl set image deployment/api-server api-server=${ECR_REGISTRY}/${API_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
 
-          # ✅ Assumption: deployment name = lms-api, container name = lms-api
-          kubectl set image deployment/lms-api lms-api=${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
+          # ✅ Matches your YAML:
+          # deployment: web-server, container: web-server
+          kubectl set image deployment/web-server web-server=${ECR_REGISTRY}/${WEB_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
 
-          # ✅ Assumption: deployment name = lms-web, container name = lms-web
-          kubectl set image deployment/lms-web lms-web=${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
-
-          kubectl rollout status deployment/lms-api -n ${NAMESPACE}
-          kubectl rollout status deployment/lms-web -n ${NAMESPACE}
+          kubectl rollout status deployment/api-server -n ${NAMESPACE}
+          kubectl rollout status deployment/web-server -n ${NAMESPACE}
 
           kubectl get pods -n ${NAMESPACE} -o wide
-          kubectl get svc -n ${NAMESPACE}
+          kubectl get svc  -n ${NAMESPACE}
         """
       }
     }
@@ -145,9 +124,7 @@ pipeline {
 
   post {
     always {
-      sh """
-        docker system prune -af || true
-      """
+      sh "docker system prune -af || true"
     }
   }
 }
