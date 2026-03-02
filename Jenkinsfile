@@ -11,15 +11,15 @@ pipeline {
     EKS_CLUSTER  = "ekswithlms"
     NAMESPACE    = "lms"
 
-    ECR_REGISTRY   = "${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-    BACKEND_REPO   = "lms-backend"
-    FRONTEND_REPO  = "lms-frontend"
+    ECR_REGISTRY  = "${AWS_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+    BACKEND_REPO  = "lms-backend"
+    FRONTEND_REPO = "lms-frontend"
 
-    // Update these paths to match your repo
-    BACKEND_DIR = "backend"
-    FRONTEND_DIR = "frontend"
-    K8S_DIR = "k8s"
+    // ✅ repo paths (based on your Jenkins workspace output)
+    BACKEND_DIR  = "api"
+    FRONTEND_DIR = "webapp"
 
+    // build tag
     IMAGE_TAG = "${BUILD_NUMBER}"
   }
 
@@ -35,17 +35,24 @@ pipeline {
       steps {
         sh """
           set -e
+          echo "AWS:"
           aws --version
+
+          echo "kubectl:"
           kubectl version --client=true
+
+          echo "Docker:"
           docker --version
 
-          echo "Workspace:"
+          echo "Workspace files:"
           ls -la
 
-          echo "Checking expected folders (update Jenkinsfile if different):"
-          ls -la ${BACKEND_DIR} || true
-          ls -la ${FRONTEND_DIR} || true
-          ls -la ${K8S_DIR} || true
+          echo "Repo folders:"
+          ls -la ${BACKEND_DIR}
+          ls -la ${FRONTEND_DIR}
+
+          echo "YAML files in root:"
+          ls -la postgres.yaml lms-api.yaml lms-web.yaml
         """
       }
     }
@@ -60,7 +67,7 @@ pipeline {
       }
     }
 
-    stage("Build & Push Backend") {
+    stage("Build & Push Backend (api)") {
       steps {
         sh """
           set -e
@@ -71,7 +78,7 @@ pipeline {
       }
     }
 
-    stage("Build & Push Frontend") {
+    stage("Build & Push Frontend (webapp)") {
       steps {
         sh """
           set -e
@@ -87,7 +94,9 @@ pipeline {
         sh """
           set -e
           aws eks update-kubeconfig --region ${AWS_REGION} --name ${EKS_CLUSTER}
+
           kubectl get nodes
+
           kubectl get ns ${NAMESPACE} || kubectl create ns ${NAMESPACE}
         """
       }
@@ -97,7 +106,10 @@ pipeline {
       steps {
         sh """
           set -e
-          kubectl apply -n ${NAMESPACE} -f ${K8S_DIR}
+          kubectl apply -n ${NAMESPACE} -f postgres.yaml
+          kubectl apply -n ${NAMESPACE} -f lms-api.yaml
+          kubectl apply -n ${NAMESPACE} -f lms-web.yaml
+
           kubectl get all -n ${NAMESPACE}
         """
       }
@@ -108,16 +120,24 @@ pipeline {
         sh """
           set -e
 
-          # ✅ CHANGE THESE NAMES to match your Kubernetes manifests:
-          # deployment/<DEPLOYMENT_NAME> and container name inside that deployment
-          kubectl set image deployment/lms-backend  lms-backend=${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG}   -n ${NAMESPACE}
-          kubectl set image deployment/lms-frontend lms-frontend=${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
+          # ============================================================
+          # IMPORTANT: Update deployment + container names if different.
+          # Use:
+          # kubectl get deploy -n ${NAMESPACE}
+          # kubectl get deploy <name> -n ${NAMESPACE} -o jsonpath='{.spec.template.spec.containers[*].name}'
+          # ============================================================
 
-          kubectl rollout status deployment/lms-backend  -n ${NAMESPACE}
-          kubectl rollout status deployment/lms-frontend -n ${NAMESPACE}
+          # ✅ Assumption: deployment name = lms-api, container name = lms-api
+          kubectl set image deployment/lms-api lms-api=${ECR_REGISTRY}/${BACKEND_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
+
+          # ✅ Assumption: deployment name = lms-web, container name = lms-web
+          kubectl set image deployment/lms-web lms-web=${ECR_REGISTRY}/${FRONTEND_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
+
+          kubectl rollout status deployment/lms-api -n ${NAMESPACE}
+          kubectl rollout status deployment/lms-web -n ${NAMESPACE}
 
           kubectl get pods -n ${NAMESPACE} -o wide
-          kubectl get svc  -n ${NAMESPACE}
+          kubectl get svc -n ${NAMESPACE}
         """
       }
     }
