@@ -38,14 +38,22 @@ spec:
               value: "itjustworks"
             - name: POSTGRES_DB
               value: "mydb"
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
           readinessProbe:
             exec:
-              command: ["sh", "-c", "pg_isready -U postgres -d mydb"]
+              command:
+                - sh
+                - -c
+                - pg_isready -U postgres -d mydb
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             exec:
-              command: ["sh", "-c", "pg_isready -U postgres -d mydb"]
+              command:
+                - sh
+                - -c
+                - pg_isready -U postgres -d mydb
             initialDelaySeconds: 10
             periodSeconds: 10
           volumeMounts:
@@ -56,7 +64,7 @@ spec:
     - metadata:
         name: db-data
       spec:
-        storageClassName: gp2   # ✅ IMPORTANT FIX
+        storageClassName: gp2
         accessModes:
           - ReadWriteOnce
         resources:
