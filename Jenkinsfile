@@ -20,6 +20,7 @@ pipeline {
   }
 
   stages {
+
     stage("Checkout") {
       steps {
         git branch: "main", url: "https://github.com/harikayarabala/lms-project.git"
@@ -34,9 +35,14 @@ pipeline {
           kubectl version --client=true
           docker --version
 
+          echo "Repo files:"
           ls -la
+
+          echo "App dirs:"
           ls -la ${API_DIR}
           ls -la ${WEB_DIR}
+
+          echo "Manifests:"
           ls -la postgres.yaml lms-api.yaml lms-web.yaml
         """
       }
@@ -85,6 +91,23 @@ pipeline {
       }
     }
 
+    stage("Verify EBS CSI Driver") {
+      steps {
+        sh """
+          set -e
+          echo "Checking EBS CSI pods..."
+          kubectl get pods -n kube-system | grep -i ebs || true
+
+          # Fail if controller not running (prevents PVC stuck Pending)
+          CNT=\$(kubectl get pods -n kube-system | grep -i ebs-csi-controller | grep Running | wc -l || true)
+          if [ "\$CNT" -lt 1 ]; then
+            echo "EBS CSI controller not running. Fix aws-ebs-csi-driver add-on/IAM first."
+            exit 1
+          fi
+        """
+      }
+    }
+
     stage("Apply Manifests") {
       steps {
         sh """
@@ -106,14 +129,18 @@ pipeline {
 
           # ✅ Matches your YAML:
           # deployment: api-server, container: api-server
-          kubectl set image deployment/api-server api-server=${ECR_REGISTRY}/${API_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
+          kubectl set image deployment/api-server \
+            api-server=${ECR_REGISTRY}/${API_REPO}:${IMAGE_TAG} \
+            -n ${NAMESPACE}
 
           # ✅ Matches your YAML:
           # deployment: web-server, container: web-server
-          kubectl set image deployment/web-server web-server=${ECR_REGISTRY}/${WEB_REPO}:${IMAGE_TAG} -n ${NAMESPACE}
+          kubectl set image deployment/web-server \
+            web-server=${ECR_REGISTRY}/${WEB_REPO}:${IMAGE_TAG} \
+            -n ${NAMESPACE}
 
-          kubectl rollout status deployment/api-server -n ${NAMESPACE}
-          kubectl rollout status deployment/web-server -n ${NAMESPACE}
+          kubectl rollout status deployment/api-server -n ${NAMESPACE} --timeout=180s
+          kubectl rollout status deployment/web-server -n ${NAMESPACE} --timeout=180s
 
           kubectl get pods -n ${NAMESPACE} -o wide
           kubectl get svc  -n ${NAMESPACE}
